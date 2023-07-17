@@ -1,0 +1,193 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: "AWS::Serverless-2016-10-31"
+Description: Template for gpt prompt processor
+
+# Parameters
+Parameters:
+  env:
+    Type: String
+    Description: Name of an environment. 'dev', 'test', 'prod' and any name.
+    AllowedPattern: ^.*[^0-9]$
+    ConstraintDescription: Must end with non-numeric character.
+  project:
+    Type: String
+    Description: Name of the project.
+    Default: prompt-processor
+
+Resources:
+  # Role #####################################################
+
+  lambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${env}-${project}-lambda-role"
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action:
+              - sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+        Version: 2012-10-17
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSLambdaExecute
+      Path: /
+      Policies:
+        - PolicyName: LambdaFeedContentDatabaseAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "dynamodb:PutItem"
+                  - "dynamodb:Query"
+                  - "dynamodb:GetItem"
+                  - "dynamodb:DescribeTable"
+                Resource: !GetAtt promptTable.Arn
+        - PolicyName: LambdaQueueAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "sqs:SendMessage"
+                  - "sqs:ReceiveMessage"
+                  - "sqs:ChangeMessageVisibility"
+                  - "sqs:DeleteMessage"
+                  - "sqs:GetQueueAttributes"
+                  - "sqs:GetQueueUrl"
+                Resource: !GetAtt promptQueue.Arn
+
+  # DynamoDB #######################################################
+
+  promptTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub ${env}-${project}-table
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+
+  # Lambda ################################################
+
+  promptReceiverFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${env}-${project}-receiver-lambda
+      Description: Receives and validates prompt request from api
+      Runtime: nodejs16.x
+      CodeUri: ./build/prompt-receiver/index.js
+      Handler: index.handler
+      MemorySize: 512
+      Timeout: 180
+      Role: !GetAtt
+        - lambdaRole
+        - Arn
+      Environment:
+        Variables:
+          ENV: !Sub ${env}
+          AWS_NODEJS_CONNECTION_REUSE_ENABLED: 1
+          PROMPT_REQUEST_QUEUE_ARN: !Ref promptQueue
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            RestApiId: !Ref promptApi
+            Path: /gpt/prompt
+            Method: POST
+
+  promptProcessorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${env}-${project}-processor-lambda
+      Description: Processes ChatGPT Prompts
+      Runtime: nodejs16.x
+      CodeUri: ./build/prompt-receiver/index.js
+      Handler: index.handler
+      MemorySize: 512
+      Timeout: 180
+      Role: !GetAtt
+        - lambdaRole
+        - Arn
+      Environment:
+        Variables:
+          ENV: !Sub ${env}
+          AWS_NODEJS_CONNECTION_REUSE_ENABLED: 1
+          OPENAI_CHAT_URL: https://api.openai.com/v1/chat/completions
+          OPENAI_COMPLETION_URL: https://api.openai.com/v1/completions
+          PROMPT_TABLE: !GetAtt promptTable.Arn
+      Events:
+        SQSEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt promptQueue.Arn
+
+  # Queue ##########################################
+
+  promptQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${env}-${project}-request-queue"
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt promptDLQ.Arn
+        maxReceiveCount: 1
+      Tags:
+        - Key: Name
+          Value: !Sub "${env}-${project}-request-queue"
+        - Key: Environment
+          Value: !Ref env
+
+  promptDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${env}-${project}-request-dlq"
+      Tags:
+        - Key: Environment
+          Value: !Ref env
+
+  # API GATEWAY ######################################################
+
+  apiGatewayLoggingRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - "apigateway.amazonaws.com"
+            Action: "sts:AssumeRole"
+      Path: "/"
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs"
+
+  # Account Config
+
+  ApiGwAccountConfig:
+    Type: "AWS::ApiGateway::Account"
+    DependsOn: apiGatewayLoggingRole
+    Properties:
+      CloudWatchRoleArn: !GetAtt "apiGatewayLoggingRole.Arn"
+
+  # API Gateway
+
+  promptApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub ${env}-${project}-api
+      AlwaysDeploy: true
+      StageName: !Sub ${env}
+      TracingEnabled: true
+      MethodSettings:
+        - LoggingLevel: INFO
+          ResourcePath: "/*" # allows for logging on any resource
+          HttpMethod: "*" # allows for logging on any method
+
