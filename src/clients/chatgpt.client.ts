@@ -47,7 +47,7 @@ export class ChatGPTClient {
       headers
     )
 
-    return response.data?.choices[0]?.text
+    return response.data?.choices[0]?.message?.content
   }
 
   async chatWithErrorHandling(
@@ -55,7 +55,7 @@ export class ChatGPTClient {
     model = "gpt-3.5-turbo",
     maxTokens = 1500,
     randomness = 0.1
-  ): Promise<string> {
+  ): Promise<string | ChatGPTCustomErrorType> {
     try {
       console.log("chatWithErrorHandling() called", {
         messages,
@@ -85,7 +85,7 @@ export class ChatGPTClient {
         headers
       )
 
-      return response.data?.choices[0]?.text
+      return response.data?.choices[0]?.message?.content
     } catch (e) {
       return this.handleError(e)
     }
@@ -131,7 +131,7 @@ export class ChatGPTClient {
     model = "text-davinci-003",
     maxTokens = 1500,
     randomness = 0.1
-  ): Promise<string> {
+  ): Promise<string | ChatGPTCustomErrorType> {
     try {
       console.log("completeWithErrorHandling() called", {
         prompt,
@@ -167,8 +167,8 @@ export class ChatGPTClient {
     }
   }
 
-  private handleError(e: unknown): string {
-    let reason: string = CustomChatGPTError.UNKNOWN
+  private handleError(e: unknown): ChatGPTCustomErrorType {
+    let reason: CustomChatGPTError = CustomChatGPTError.UNKNOWN
 
     if (e instanceof AxiosError) {
       console.warn(
@@ -180,12 +180,12 @@ export class ChatGPTClient {
           "Likely exceding model token size",
           JSON.stringify(e.response.data)
         )
-        reason = `${CustomChatGPTError.TOKEN_LIMIT} - ${e.response.data.message}`
+        reason = CustomChatGPTError.TOKEN_LIMIT
       }
 
       if (e.response?.status === 404) {
         console.error("Likely wrong model", JSON.stringify(e.response.data))
-        reason = `${CustomChatGPTError.INVALID_MODEL} - ${e.response.data.message}`
+        reason = CustomChatGPTError.INVALID_MODEL
       }
 
       if (e.response?.status === 429) {
@@ -193,12 +193,12 @@ export class ChatGPTClient {
           "Rate limit reached! Skipping this request and wait for 10s before invoking next request",
           JSON.stringify(e.response.data)
         )
-        reason = `${CustomChatGPTError.RATE_LIMIT} - ${e.response.data.message}`
+        reason = CustomChatGPTError.RATE_LIMIT
       }
     } else {
       console.warn("unable to perform complete() due to non axios error: ", e)
       throw e
     }
-    return reason
+    return { reason, response: e?.response?.data.message }
   }
 }

@@ -4,6 +4,8 @@ module.exports = {
   entry: {
     "prompt-receiver": "./src/handlers/prompt.receiver.handler.ts",
     "prompt-processor": "./src/handlers/prompt.processor.handler.ts",
+    "prompt-retriever": "./src/handlers/prompt.retriever.handler.ts",
+    "api-authorizer": "./src/handlers/custom.auth.handler.ts",
   },
   mode: "production",
   target: "node",

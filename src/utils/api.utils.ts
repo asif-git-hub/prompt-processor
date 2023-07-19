@@ -20,3 +20,10 @@ export function createInternalError(): APIGatewayProxyResult {
     body: "Internal Error",
   }
 }
+
+export function createNotFoundError(): APIGatewayProxyResult {
+  return {
+    statusCode: 404,
+    body: "NOT FOUND",
+  }
+}

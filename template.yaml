@@ -43,6 +43,7 @@ Resources:
                   - "dynamodb:PutItem"
                   - "dynamodb:Query"
                   - "dynamodb:GetItem"
+                  - "dynamodb:UpdateItem"
                   - "dynamodb:DescribeTable"
                 Resource: !GetAtt promptTable.Arn
         - PolicyName: LambdaQueueAccess
@@ -58,6 +59,15 @@ Resources:
                   - "sqs:GetQueueAttributes"
                   - "sqs:GetQueueUrl"
                 Resource: !GetAtt promptQueue.Arn
+        - PolicyName: SSMParameterAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "ssm:GetParameters"
+                  - "ssm:GetParameter"
+                Resource: "*"
 
   # DynamoDB #######################################################
 
@@ -94,6 +104,7 @@ Resources:
         Variables:
           ENV: !Sub ${env}
           AWS_NODEJS_CONNECTION_REUSE_ENABLED: 1
+          PROMPT_TABLE: !Ref promptTable
           PROMPT_REQUEST_QUEUE_ARN: !Ref promptQueue
       Events:
         ApiEvent:
@@ -109,7 +120,33 @@ Resources:
       FunctionName: !Sub ${env}-${project}-processor-lambda
       Description: Processes ChatGPT Prompts
       Runtime: nodejs16.x
-      CodeUri: ./build/prompt-receiver/index.js
+      CodeUri: ./build/prompt-processor/index.js
+      Handler: index.handler
+      MemorySize: 512
+      Timeout: 800
+      Role: !GetAtt
+        - lambdaRole
+        - Arn
+      Environment:
+        Variables:
+          ENV: !Sub ${env}
+          AWS_NODEJS_CONNECTION_REUSE_ENABLED: 1
+          OPENAI_CHAT_URL: https://api.openai.com/v1/chat/completions
+          OPENAI_COMPLETION_URL: https://api.openai.com/v1/completions
+          PROMPT_TABLE: !Ref promptTable
+      Events:
+        SQSEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt promptQueue.Arn
+
+  promptRetrieverFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${env}-${project}-retriever-lambda
+      Description: Gets prompt request from api
+      Runtime: nodejs16.x
+      CodeUri: ./build/prompt-retriever/index.js
       Handler: index.handler
       MemorySize: 512
       Timeout: 180
@@ -120,14 +157,32 @@ Resources:
         Variables:
           ENV: !Sub ${env}
           AWS_NODEJS_CONNECTION_REUSE_ENABLED: 1
-          OPENAI_CHAT_URL: https://api.openai.com/v1/chat/completions
-          OPENAI_COMPLETION_URL: https://api.openai.com/v1/completions
-          PROMPT_TABLE: !GetAtt promptTable.Arn
+          PROMPT_TABLE: !Ref promptTable
       Events:
-        SQSEvent:
-          Type: SQS
+        ApiEvent:
+          Type: Api
           Properties:
-            Queue: !GetAtt promptQueue.Arn
+            RestApiId: !Ref promptApi
+            Path: /gpt/prompt
+            Method: GET
+
+  apiAuthorizerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${env}-${project}-authorizer-lambda
+      Description: Authorizes api gateway requests
+      Runtime: nodejs16.x
+      CodeUri: ./build/api-authorizer/index.js
+      Handler: index.handler
+      MemorySize: 128
+      Timeout: 120
+      Role: !GetAtt
+        - lambdaRole
+        - Arn
+      Environment:
+        Variables:
+          ENV: !Sub ${env}
+          TOKEN_SSM: !Sub "/${env}/resources/api/token"
 
   # Queue ##########################################
 
@@ -135,6 +190,7 @@ Resources:
     Type: AWS::SQS::Queue
     Properties:
       QueueName: !Sub "${env}-${project}-request-queue"
+      VisibilityTimeout: 810
       RedrivePolicy:
         deadLetterTargetArn: !GetAtt promptDLQ.Arn
         maxReceiveCount: 1
@@ -190,4 +246,22 @@ Resources:
         - LoggingLevel: INFO
           ResourcePath: "/*" # allows for logging on any resource
           HttpMethod: "*" # allows for logging on any method
+      Auth:
+        DefaultAuthorizer: MyLambdaTokenAuthorizer
+        Authorizers:
+          MyLambdaTokenAuthorizer:
+            FunctionArn: !GetAtt apiAuthorizerFunction.Arn
+            Identity:
+              Header: Authorization
+              ReauthorizeEvery: 5
 
+# SSM Parameter
+
+  apiTokenParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      DataType: text
+      Description: "API Gateway Token"
+      Name: !Sub "/${env}/resources/api/token"
+      Type: String
+      Value: PUTYOURSECRETTOKENHERE

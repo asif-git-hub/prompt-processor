@@ -13,7 +13,7 @@ export type ChatGPTMessageType = {
 }
 
 export type ChatGPTCustomErrorType = {
-  response: undefined
+  response: string | undefined
   reason: CustomChatGPTError
 }
 
