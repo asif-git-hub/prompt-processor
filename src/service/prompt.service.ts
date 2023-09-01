@@ -25,7 +25,8 @@ export class PromptService {
           request.model,
           request.prompt,
           request.maxToken,
-          request.randomness
+          request.randomness,
+          request.systemMsg
         )
       } else if (request.type === "completion") {
         gptResponse = await this.processCompletion(

@@ -6,7 +6,7 @@ export const promptApiRequestBodySchema = object({
   type: string().required().oneOf(["chat", "completion"]),
   systemMsg: string().optional(),
   maxToken: number().optional().positive().integer(),
-  randomness: number().optional().positive(),
+  randomness: number().optional(),
 })
 
 export const promptRequestSchema = promptApiRequestBodySchema.shape({
